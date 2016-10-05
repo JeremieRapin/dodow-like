@@ -1,0 +1,38 @@
+dodow-like is an open source software based on Tiva C launchpad from TI.
+
+You can buy it at http://www.ti.com/tool/ek-tm4c123gxl#buy
+
+The aim is to help you to sleep more easier.
+Check this website: https://www.mydodow.com/en
+
+Thanks for jkovacic github user for the FreeRTOS port: https://github.com/jkovacic/FreeRTOS-GCC-tm4c123glx
+
+This project is still in progress. My first aim is to evaluate the Tiva C launchpad with FreeRTOS.
+Also, more commits will be provided in the next weeks. Stay tuned.
+
+For using it, you need:
+lm4flash: https://github.com/utzig/lm4tools
+Make and install it:
+cd lm4tools
+make
+then
+sudo cp lm4tools /usr/bin
+
+Compile and load this project:
+cd dodow-like
+autoreconf -vfi
+./configure --host=arm-none-eabi --enable-static CFLAGS="-nostartfiles"
+make
+
+then
+lm4tools dodow-like.elf.bin
+
+The led blinks with a regular pattern:
+ * 4 seconds increasing: Inhale with the nose.
+ * 3 seconds rest with 2 glitches: Block the respiration
+ * 8 seconds decreasing: Exhale by the mouth.
+
+The software is done to repeat the pattern during 8 minutes.
+
+SW1 change between colors.
+SW2 start or stop the pattern.
