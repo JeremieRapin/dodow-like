@@ -15,10 +15,16 @@
 
 typedef enum
 {
-  DODOW_ASYNC_INCREASE,
-  DODOW_ASYNC_STEP,
-  DODOW_ASYNC_DECREASE,
-  DODOW_ASYNC_STOP,
+  DODOW_EVENT_INCREASE,
+  DODOW_EVENT_STEP,
+  DODOW_EVENT_DECREASE,
+  DODOW_EVENT_STOP,
+} eDodowEvent_t;
+
+typedef enum
+{
+  DODOW_ASYNC_CHANGE_COLOR,
+  DODOW_ASYNC_START_STOP,
 } eDodowAsync_t;
 
 typedef struct
@@ -28,8 +34,10 @@ typedef struct
   int inc;
   int maxInc;
   int power;
-  eDodowAsync_t current;
+  eDodowEvent_t current;
   TimerHandle_t timer;
+  TaskHandle_t taskId;
+  QueueHandle_t asyncQueue;
 } sDodow_t;
 
 sDodow_t sDodow;
@@ -46,12 +54,18 @@ sDodow_t sDodow;
 #define REST_STEP               (3 * ONE_SECOND_IN_BASE_TIME) / 100
 #define DECREASE_STEP           (8 * ONE_SECOND_IN_BASE_TIME) / 100
 
-/* Decleare private function */
+/* Declare private function */
 static void dodow_ChangeColor();
 static void dodow_StartStop();
 
+static void dodow_ChangeColorButton();
+static void dodow_StartStopButton();
+
 static void dodow_Start();
 static void dodow_Stop();
+
+static void dodow_Task();
+static void dodow_AsyncFromISR(eDodowAsync_t event);
 
 static void dodow_BaseTime(TimerHandle_t pxTimer);
 
@@ -66,17 +80,23 @@ void dodow_Init()
   save_Init();
   button_Init();
 
-  button_AddCallback(BUTTON_SW1, dodow_ChangeColor);
-  button_AddCallback(BUTTON_SW2, dodow_StartStop);
+  button_AddCallback(BUTTON_SW1, dodow_ChangeColorButton);
+  button_AddCallback(BUTTON_SW2, dodow_StartStopButton);
 
   this->color = save_GetColor();
+
+  /* Create the event action queue */
+  this->asyncQueue = xQueueCreate(dodowQUEUE_SIZE, sizeof(eDodowAsync_t));
+
+  /* fork on an independent thread */
+  xTaskCreate(dodow_Task, "dodow", dodow_TASK_SIZE, 0, dodow_TASK_PRIORITY, &(this->taskId));
 
   this->timer = xTimerCreate("dodowBaseTime", BASE_TIME, pdTRUE, NULL, dodow_BaseTime);
   xTimerStart(this->timer, 0);
 
   this->inc     = 0;
   this->maxInc  = INCREASE_STEP;
-  this->current = DODOW_ASYNC_INCREASE;
+  this->current = DODOW_EVENT_INCREASE;
 }
 
 /*!************************************************************************************************
@@ -88,6 +108,39 @@ void dodow_Init()
 void dodow_Cleanup()
 {
 
+}
+
+/*!************************************************************************************************
+ * \fn         void dodow_Task()
+ * \brief      main task
+ * \param[in]  none
+ * \return     void
+ ***************************************************************************************************/
+static void dodow_Task()
+{
+  eDodowAsync_t eAsync;
+
+  /* run task */
+  for (;;)
+  {
+    /* Wait until there is something to do. */
+    xQueueReceive(this->asyncQueue, &eAsync, portMAX_DELAY);
+
+    /* Perform a different action for each event type. */
+    switch (eAsync)
+    {
+      case DODOW_ASYNC_CHANGE_COLOR:
+        dodow_ChangeColor();
+      break;
+
+      case DODOW_ASYNC_START_STOP:
+        dodow_StartStop();
+      break;
+
+      default:
+      break;
+    }
+  }
 }
 
 /*!************************************************************************************************
@@ -103,15 +156,15 @@ static void dodow_BaseTime(TimerHandle_t pxTimer)
   if(this->inc > this->maxInc)
   {
     this->current++;
-    if(this->current >= DODOW_ASYNC_STOP)
+    if(this->current >= DODOW_EVENT_STOP)
     {
       if (this->step > STEP_COUNTER)
       {
-        this->current = DODOW_ASYNC_STOP;
+        this->current = DODOW_EVENT_STOP;
       }
       else
       {
-        this->current = DODOW_ASYNC_INCREASE;
+        this->current = DODOW_EVENT_INCREASE;
       }
       this->step++;
     }
@@ -121,12 +174,12 @@ static void dodow_BaseTime(TimerHandle_t pxTimer)
   /* Handle action to do on step */
   switch (this->current)
   {
-    case DODOW_ASYNC_INCREASE:
+    case DODOW_EVENT_INCREASE:
       this->maxInc = INCREASE_STEP;
       pwmOutput_Set(this->color, this->power++);
     break;
 
-    case DODOW_ASYNC_STEP:
+    case DODOW_EVENT_STEP:
       this->maxInc = REST_STEP;
 
       if((this->inc == 1) || (this->inc == (this->maxInc - 1)))
@@ -141,18 +194,29 @@ static void dodow_BaseTime(TimerHandle_t pxTimer)
       }
     break;
 
-    case DODOW_ASYNC_DECREASE:
+    case DODOW_EVENT_DECREASE:
       this->maxInc = DECREASE_STEP;
       pwmOutput_Set(this->color, this->power--);
     break;
 
-    case DODOW_ASYNC_STOP:
+    case DODOW_EVENT_STOP:
       dodow_Stop();
       break;
 
     default:
       break;
   }
+}
+
+/*!************************************************************************************************
+ * \fn         static void dodow_AsyncFromISR(eDodowAsync_t event)
+ * \brief      event from isr
+ * \param[in]  event
+ * \return     void
+ ***************************************************************************************************/
+static void dodow_AsyncFromISR(eDodowAsync_t event)
+{
+  xQueueSendFromISR(this->asyncQueue, &event, 0);
 }
 
 /*!************************************************************************************************
@@ -164,7 +228,7 @@ static void dodow_BaseTime(TimerHandle_t pxTimer)
 static void dodow_Start()
 {
   xTimerStart(this->timer, 0);
-  this->current = DODOW_ASYNC_INCREASE;
+  this->current = DODOW_EVENT_INCREASE;
   this->inc = 0;
   this->power = 0;
   this->maxInc = INCREASE_STEP;
@@ -181,8 +245,30 @@ static void dodow_Start()
 static void dodow_Stop()
 {
   xTimerStop(this->timer, 0);
-  this->current = DODOW_ASYNC_STOP;
+  this->current = DODOW_EVENT_STOP;
   pwmOutput_Stop();
+}
+
+/*!************************************************************************************************
+ * \fn         static void dodow_ChangeColorButton()
+ * \brief      change color request from button
+ * \param[in]  none
+ * \return     void
+ ***************************************************************************************************/
+static void dodow_ChangeColorButton()
+{
+  dodow_AsyncFromISR(DODOW_ASYNC_CHANGE_COLOR);
+}
+
+/*!************************************************************************************************
+ * \fn         static void dodow_StartStopButton()
+ * \brief      start/stop request from button
+ * \param[in]  none
+ * \return     void
+ ***************************************************************************************************/
+static void dodow_StartStopButton()
+{
+  dodow_AsyncFromISR(DODOW_ASYNC_START_STOP);
 }
 
 /*!************************************************************************************************
@@ -212,7 +298,7 @@ static void dodow_ChangeColor()
  ***************************************************************************************************/
 static void dodow_StartStop()
 {
-  if(this->current == DODOW_ASYNC_STOP)
+  if(this->current == DODOW_EVENT_STOP)
   {
     dodow_Start();
   }
